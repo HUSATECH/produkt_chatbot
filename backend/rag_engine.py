@@ -68,18 +68,19 @@ class RAGEngine:
                 ]
             )
         
-        # Suche in Qdrant
+        # Suche in Qdrant (neue API: query_points statt search)
         try:
-            results = self.qdrant_client.search(
+            search_result = self.qdrant_client.query_points(
                 collection_name=COLLECTION_NAME,
-                query_vector=query_embedding,
+                query=query_embedding,
                 query_filter=filter_condition,
                 limit=limit,
                 score_threshold=min_score
             )
             
-            # Ergebnisse formatieren
+            # Ergebnisse formatieren (query_points gibt .points zurück)
             products = []
+            results = search_result.points if hasattr(search_result, 'points') else search_result
             for result in results:
                 product = {
                     "id": result.id,
