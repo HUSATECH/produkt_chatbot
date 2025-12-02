@@ -51,7 +51,9 @@ header {
 }
 
 .logo-icon {
-    font-size: 2em;
+    width: 60px;
+    height: 60px;
+    object-fit: contain;
     display: flex;
     align-items: center;
     justify-content: center;
