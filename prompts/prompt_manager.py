@@ -270,6 +270,26 @@ class PromptManager:
         """Holt den Speicher-Empfehlungs-Prompt."""
         return self.get_prompt('storage_recommendation_prompt') or ""
     
+    def get_pv_recommendation_prompt(self) -> str:
+        """Holt den PV-Anlagen-Empfehlungs-Prompt."""
+        return self.get_prompt('pv_recommendation_prompt') or """
+Erstelle eine detaillierte PV-Anlagen-Empfehlung basierend auf den Kundenangaben.
+
+WICHTIG - PRIORISIERE FERTIGE SETS:
+1. Empfehle zuerst passende Komplett-Sets (wenn verfügbar)
+2. Erkläre die Vorteile des Sets (optimal aufeinander abgestimmt, einfache Installation)
+3. Nur wenn kein passendes Set verfügbar: Empfehle Einzelkomponenten
+
+STRUKTUR DER EMPFEHLUNG:
+1. **Zusammenfassung** der Anforderungen
+2. **Empfohlene Sets** (mit Artikelnummern) 
+3. **Alternative Einzelkomponenten** (falls gewünscht)
+4. **Erwarteter Ertrag** und Wirtschaftlichkeit
+5. **Hinweise** zur Installation und Kompatibilität
+
+Nenne immer die Artikelnummern in Klammern: (Art.-Nr. XXXXXXX)
+"""
+    
     def get_context_prompt(self, mode: str) -> str:
         """
         Holt den Kontext-Prompt für einen bestimmten Modus.

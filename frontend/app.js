@@ -325,8 +325,30 @@ function extractAllTechnicalSpecs(product, payload) {
                     displayValue = value.toString();
                 }
             } else if (typeof value === 'object') {
-                // Verschachtelte Objekte als JSON (selten)
-                displayValue = JSON.stringify(value);
+                // Verschachtelte Objekte schön formatieren (z.B. Komponenten-Specs)
+                const formattedParts = [];
+                for (const [subKey, subValue] of Object.entries(value)) {
+                    if (subValue !== null && subValue !== undefined && subValue !== '') {
+                        const subLabel = subKey.replace(/_/g, ' ').replace(/^./, str => str.toUpperCase());
+                        let subDisplayValue = subValue;
+                        if (typeof subValue === 'boolean') {
+                            subDisplayValue = subValue ? 'Ja' : 'Nein';
+                        } else if (typeof subValue === 'number') {
+                            // Einheiten für verschachtelte Werte
+                            if (subKey.includes('kwh') || subKey.includes('kapazitaet')) {
+                                subDisplayValue = `${subValue} kWh`;
+                            } else if (subKey.includes('_w') || subKey.includes('leistung')) {
+                                subDisplayValue = `${subValue} W`;
+                            } else if (subKey.includes('_v') || subKey.includes('spannung')) {
+                                subDisplayValue = `${subValue} V`;
+                            } else if (subKey.includes('wirkungsgrad')) {
+                                subDisplayValue = `${subValue}%`;
+                            }
+                        }
+                        formattedParts.push(`${subLabel}: ${subDisplayValue}`);
+                    }
+                }
+                displayValue = formattedParts.join(', ');
             } else {
                 displayValue = String(value);
             }
@@ -336,6 +358,92 @@ function extractAllTechnicalSpecs(product, payload) {
     }
     
     const produkttyp = (product.produkttyp || '').toLowerCase();
+    
+    // ============================================================
+    // 0. SET-PRODUKTE: Höchste Priorität - immer ganz oben!
+    // ============================================================
+    if (payload.ist_set || payload.set_spezifikationen || payload.set_gesamt || payload.komponenten_spezifikationen) {
+        const setSpecs = payload.set_spezifikationen || {};
+        const setGesamt = payload.set_gesamt || setSpecs.set_gesamt || {};
+        const komponenten = payload.komponenten_spezifikationen || setSpecs.komponenten || {};
+        const setTyp = payload.set_typ_detail || setSpecs.set_typ || '';
+        const erkannteTypen = payload.erkannte_komponenten_typen || setSpecs.erkannte_typen || [];
+        
+        // Set-Typ IMMER ganz oben (Priorität 100)
+        if (setTyp) {
+            addSpec('Set-Typ', setTyp.replace(/_/g, ' ').replace(/^./, s => s.toUpperCase()), 100);
+        }
+        
+        // Enthaltene Komponenten
+        if (erkannteTypen && erkannteTypen.length > 0) {
+            addSpec('Enthält', erkannteTypen.map(t => t.replace(/^./, s => s.toUpperCase())).join(', '), 99);
+        }
+        
+        // Set-Gesamtdaten (Priorität 98)
+        if (setGesamt && typeof setGesamt === 'object' && Object.keys(setGesamt).length > 0) {
+            // Formatiere Set-Gesamt schön
+            const gesamtParts = [];
+            for (const [key, value] of Object.entries(setGesamt)) {
+                if (value !== null && value !== undefined && value !== '') {
+                    let label = key.replace(/_/g, ' ').replace(/^./, s => s.toUpperCase());
+                    let displayValue = value;
+                    
+                    if (typeof value === 'boolean') {
+                        displayValue = value ? 'Ja' : 'Nein';
+                    } else if (typeof value === 'number') {
+                        if (key.includes('kwh') || key.includes('kapazitaet')) {
+                            displayValue = `${value} kWh`;
+                        } else if (key.includes('_w') || key.includes('leistung')) {
+                            displayValue = `${value} W`;
+                        } else if (key.includes('_v') || key.includes('spannung')) {
+                            displayValue = `${value} V`;
+                        }
+                    }
+                    gesamtParts.push(`${label}: ${displayValue}`);
+                }
+            }
+            if (gesamtParts.length > 0) {
+                addSpec('Set gesamt', gesamtParts.join(', '), 98);
+            }
+        }
+        
+        // Komponenten-Spezifikationen (Priorität 97-95)
+        if (komponenten && typeof komponenten === 'object') {
+            let kompPriority = 97;
+            for (const [kompTyp, kompSpecs] of Object.entries(komponenten)) {
+                if (kompSpecs && typeof kompSpecs === 'object' && Object.keys(kompSpecs).length > 0) {
+                    // Formatiere Komponenten-Specs schön
+                    const kompParts = [];
+                    for (const [key, value] of Object.entries(kompSpecs)) {
+                        if (value !== null && value !== undefined && value !== '') {
+                            let label = key.replace(/_/g, ' ').replace(/^./, s => s.toUpperCase());
+                            let displayValue = value;
+                            
+                            if (typeof value === 'boolean') {
+                                displayValue = value ? 'Ja' : 'Nein';
+                            } else if (typeof value === 'number') {
+                                if (key.includes('kwh') || key.includes('kapazitaet')) {
+                                    displayValue = `${value} kWh`;
+                                } else if (key.includes('_w') || key.includes('leistung')) {
+                                    displayValue = `${value} W`;
+                                } else if (key.includes('_v') || key.includes('spannung')) {
+                                    displayValue = `${value} V`;
+                                } else if (key.includes('wirkungsgrad')) {
+                                    displayValue = `${value}%`;
+                                }
+                            }
+                            kompParts.push(`${label}: ${displayValue}`);
+                        }
+                    }
+                    if (kompParts.length > 0) {
+                        const kompLabel = kompTyp.replace(/_/g, ' ').replace(/^./, s => s.toUpperCase());
+                        addSpec(kompLabel, kompParts.join(', '), kompPriority);
+                        kompPriority--;
+                    }
+                }
+            }
+        }
+    }
     
     // ============================================================
     // 1. PRODUKTSPEZIFISCHE SPEZIFIKATIONEN (höchste Priorität)
@@ -608,7 +716,7 @@ function extractAllTechnicalSpecs(product, payload) {
         'solarmodul_spezifikationen', 'laderegler_spezifikationen',
         'spannungswandler_spezifikationen', 'mikrowechselrichter_spezifikationen',
         'stringwechselrichter_spezifikationen', 'powerstation_spezifikationen',
-        'technische_spezifikationen'
+        'technische_spezifikationen', 'set_spezifikationen', 'komponenten_spezifikationen'
     ];
     
     for (const key of Object.keys(payload)) {
@@ -960,6 +1068,108 @@ function showProductCompare() {
 
 function showStorageRecommendation() {
     document.getElementById('storage-recommendation-modal').classList.remove('hidden');
+}
+
+function showPVRecommendation() {
+    document.getElementById('pv-recommendation-modal').classList.remove('hidden');
+}
+
+async function getPVRecommendation() {
+    // Sammle alle Eingaben
+    const dachflaeche = document.getElementById('pv-dachflaeche').value ? 
+        parseFloat(document.getElementById('pv-dachflaeche').value) : null;
+    const leistungKwp = document.getElementById('pv-leistung-kwp').value ? 
+        parseFloat(document.getElementById('pv-leistung-kwp').value) : null;
+    const neigung = parseInt(document.getElementById('pv-neigung').value) || 30;
+    const ausrichtung = document.getElementById('pv-ausrichtung').value || 'sued';
+    const stromverbrauch = document.getElementById('pv-stromverbrauch').value ? 
+        parseFloat(document.getElementById('pv-stromverbrauch').value) : null;
+    const mitSpeicher = document.getElementById('pv-mit-speicher').checked;
+    const notstrom = document.getElementById('pv-notstrom').checked;
+    const balkon = document.getElementById('pv-balkon').checked;
+    const budget = document.getElementById('pv-budget').value ? 
+        parseFloat(document.getElementById('pv-budget').value) : null;
+    const beschreibung = document.getElementById('pv-beschreibung').value || null;
+    
+    // Validierung
+    if (!dachflaeche && !leistungKwp) {
+        alert('Bitte gib entweder die Dachfläche oder die gewünschte Leistung an.');
+        return;
+    }
+    
+    const resultsDiv = document.getElementById('pv-results');
+    resultsDiv.innerHTML = '<div class="loading-container"><div class="loading"></div><span>Berechne PV-Empfehlung...</span></div>';
+    
+    try {
+        const response = await fetch(`${API_BASE}/api/pv-recommendation`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                dachflaeche_m2: dachflaeche,
+                gewuenschte_leistung_kwp: leistungKwp,
+                dachneigung_grad: neigung,
+                dachausrichtung: ausrichtung,
+                stromverbrauch_kwh: stromverbrauch,
+                mit_speicher: mitSpeicher,
+                notstromfaehig: notstrom,
+                balkonkraftwerk: balkon,
+                max_budget: budget,
+                beschreibung: beschreibung
+            })
+        });
+        
+        const data = await response.json();
+        
+        // Formatiere Ergebnisse
+        let html = '<div class="pv-results-content">';
+        
+        // Parameter-Zusammenfassung
+        if (data.parameter) {
+            html += '<div class="pv-params-summary">';
+            html += '<h4>📊 Berechnungsgrundlage</h4>';
+            html += '<div class="params-grid">';
+            html += `<span>Leistung: <strong>${data.parameter.gewuenschte_leistung_kwp?.toFixed(1) || '?'} kWp</strong></span>`;
+            html += `<span>Erwarteter Ertrag: <strong>${data.parameter.erwarteter_ertrag_kwh?.toLocaleString() || '?'} kWh/Jahr</strong></span>`;
+            html += `<span>Ausrichtung: <strong>${data.parameter.dachausrichtung?.toUpperCase() || '?'}</strong></span>`;
+            html += `<span>Speicher: <strong>${data.parameter.mit_speicher ? 'Ja' : 'Nein'}</strong></span>`;
+            html += '</div>';
+            html += '</div>';
+        }
+        
+        // Empfehlungstext
+        html += '<div class="pv-recommendation-text">';
+        html += `<div class="message assistant"><div class="message-bubble">${markdownToHTML(data.response)}</div></div>`;
+        html += '</div>';
+        
+        // Gefundene Sets
+        if (data.components && data.components.sets && data.components.sets.length > 0) {
+            html += '<div class="pv-sets-section">';
+            html += '<h4>🎯 Gefundene Komplett-Sets</h4>';
+            html += '<div class="pv-product-grid">';
+            for (const set of data.components.sets.slice(0, 5)) {
+                const score = Math.round((set.score || 0) * 100);
+                html += `<div class="pv-product-card set-card">`;
+                html += `<div class="product-score">${score}% passend</div>`;
+                html += `<h5>${set.artikelname || 'Unbekannt'}</h5>`;
+                html += `<p class="product-artikelnummer">Art.-Nr.: ${set.artikelnummer || 'N/A'}</p>`;
+                if (set.stueckliste && set.stueckliste.length > 0) {
+                    html += `<p class="product-components">📦 ${set.stueckliste.length} Komponenten enthalten</p>`;
+                }
+                html += `</div>`;
+            }
+            html += '</div>';
+            html += '</div>';
+        }
+        
+        html += '</div>';
+        resultsDiv.innerHTML = html;
+        
+    } catch (error) {
+        console.error('PV-Empfehlung Fehler:', error);
+        resultsDiv.innerHTML = `<div class="error">Fehler bei der Berechnung: ${error.message}</div>`;
+    }
 }
 
 function closeModal(modalId) {

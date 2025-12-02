@@ -59,6 +59,30 @@ class StorageRecommendationRequest(BaseModel):
     stromverbrauch_kwh: Optional[float] = None
     autarkie_wunsch: Optional[float] = None
 
+class PVRecommendationRequest(BaseModel):
+    """Request für PV-Anlagen-Empfehlung"""
+    # Grunddaten (mindestens eines von beiden)
+    dachflaeche_m2: Optional[float] = None
+    gewuenschte_leistung_kwp: Optional[float] = None
+    
+    # Dachparameter
+    dachneigung_grad: Optional[int] = 30  # Standard: 30°
+    dachausrichtung: str = "sued"  # sued, ost, west, ost_west, nord
+    
+    # Verbrauchsdaten
+    stromverbrauch_kwh: Optional[float] = None
+    
+    # Optionen
+    mit_speicher: bool = True
+    notstromfaehig: bool = False
+    balkonkraftwerk: bool = False
+    
+    # Budget
+    max_budget: Optional[float] = None
+    
+    # Freitext-Beschreibung
+    beschreibung: Optional[str] = None
+
 class PromptUpdateRequest(BaseModel):
     prompt_id: str
     content: str
@@ -217,6 +241,49 @@ async def storage_recommendation(request: StorageRecommendationRequest):
             autarkie_wunsch=request.autarkie_wunsch
         )
         return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/pv-recommendation")
+async def pv_recommendation(request: PVRecommendationRequest):
+    """
+    Empfiehlt passende PV-Anlagen-Komponenten und Sets.
+    
+    Priorität:
+    1. Fertige Sets (mit Stückliste) - optimal zusammengestellt
+    2. Einzelkomponenten (Solarmodule, Wechselrichter, Speicher)
+    
+    Berücksichtigt:
+    - Dachfläche / gewünschte Leistung
+    - Dachneigung & Ausrichtung
+    - Stromverbrauch
+    - Speicher-Wunsch & Notstromfähigkeit
+    - Budget
+    - Kompatibilität der Komponenten
+    """
+    try:
+        # Validierung: Mindestens Dachfläche oder Leistung
+        if not request.dachflaeche_m2 and not request.gewuenschte_leistung_kwp:
+            raise HTTPException(
+                status_code=400, 
+                detail="Bitte geben Sie entweder die Dachfläche oder die gewünschte Leistung an."
+            )
+        
+        result = llm_service.find_pv_recommendation(
+            dachflaeche_m2=request.dachflaeche_m2,
+            gewuenschte_leistung_kwp=request.gewuenschte_leistung_kwp,
+            dachneigung_grad=request.dachneigung_grad,
+            dachausrichtung=request.dachausrichtung,
+            stromverbrauch_kwh=request.stromverbrauch_kwh,
+            mit_speicher=request.mit_speicher,
+            notstromfaehig=request.notstromfaehig,
+            balkonkraftwerk=request.balkonkraftwerk,
+            max_budget=request.max_budget,
+            beschreibung=request.beschreibung
+        )
+        return result
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

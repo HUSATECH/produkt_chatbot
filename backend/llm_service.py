@@ -710,4 +710,222 @@ EMPFEHLUNGEN:
                 "products": products,
                 "error": str(e)
             }
+    
+    def find_pv_recommendation(
+        self,
+        dachflaeche_m2: Optional[float] = None,
+        gewuenschte_leistung_kwp: Optional[float] = None,
+        dachneigung_grad: Optional[int] = 30,
+        dachausrichtung: str = "sued",
+        stromverbrauch_kwh: Optional[float] = None,
+        mit_speicher: bool = True,
+        notstromfaehig: bool = False,
+        balkonkraftwerk: bool = False,
+        max_budget: Optional[float] = None,
+        beschreibung: Optional[str] = None
+    ) -> Dict:
+        """
+        Findet und empfiehlt passende PV-Anlagen-Komponenten und Sets.
+        
+        PRIORITÄT:
+        1. Fertige Sets (mit Stückliste) - optimal zusammengestellt
+        2. Einzelkomponenten (Solarmodule, Wechselrichter, Speicher)
+        """
+        
+        # Berechne gewünschte Leistung aus Dachfläche falls nicht angegeben
+        if not gewuenschte_leistung_kwp and dachflaeche_m2:
+            # Faustformel: ca. 6-7 m² pro kWp (bei modernen Modulen)
+            # Nutzbare Fläche: ca. 80% der Dachfläche
+            nutzbare_flaeche = dachflaeche_m2 * 0.8
+            gewuenschte_leistung_kwp = nutzbare_flaeche / 6.5  # ~6.5 m² pro kWp
+        
+        # Fallback
+        if not gewuenschte_leistung_kwp:
+            gewuenschte_leistung_kwp = 10.0  # Standard: 10 kWp
+        
+        # Ausrichtungsfaktoren für Ertrag
+        ausrichtung_faktoren = {
+            "sued": 1.0,
+            "suedost": 0.95,
+            "suedwest": 0.95,
+            "ost": 0.85,
+            "west": 0.85,
+            "ost_west": 0.90,
+            "nord": 0.55
+        }
+        ausrichtung_faktor = ausrichtung_faktoren.get(dachausrichtung.lower(), 0.9)
+        
+        # Neigungsfaktoren
+        if dachneigung_grad:
+            if 25 <= dachneigung_grad <= 35:
+                neigung_faktor = 1.0  # Optimal
+            elif 15 <= dachneigung_grad <= 45:
+                neigung_faktor = 0.95
+            else:
+                neigung_faktor = 0.85
+        else:
+            neigung_faktor = 0.95
+        
+        # Suche passende Komponenten
+        components = self.rag_engine.find_pv_components(
+            gewuenschte_leistung_kwp=gewuenschte_leistung_kwp,
+            mit_speicher=mit_speicher,
+            notstromfaehig=notstromfaehig,
+            balkonkraftwerk=balkonkraftwerk
+        )
+        
+        # Berechne Empfehlungen
+        recommendations = []
+        
+        # Erwarteter Ertrag
+        # Basis: 950-1000 kWh pro kWp in Deutschland (Süd-Ausrichtung, 30° Neigung)
+        basis_ertrag = 975  # kWh pro kWp
+        erwarteter_ertrag = gewuenschte_leistung_kwp * basis_ertrag * ausrichtung_faktor * neigung_faktor
+        recommendations.append(f"Erwarteter Jahresertrag: ca. {erwarteter_ertrag:.0f} kWh")
+        
+        # Eigenverbrauch & Autarkie
+        if stromverbrauch_kwh:
+            eigenverbrauch_quote = min(0.30 if not mit_speicher else 0.70, erwarteter_ertrag / stromverbrauch_kwh)
+            einsparung = stromverbrauch_kwh * eigenverbrauch_quote * 0.35  # ca. 35ct/kWh
+            recommendations.append(f"Geschätzte Eigenverbrauchsquote: {eigenverbrauch_quote*100:.0f}%")
+            recommendations.append(f"Geschätzte jährliche Ersparnis: ca. {einsparung:.0f} €")
+        
+        # Speicher-Empfehlung
+        if mit_speicher:
+            empfohlene_kapazitaet = gewuenschte_leistung_kwp * 1.2  # 1.2 kWh pro kWp
+            recommendations.append(f"Empfohlene Speicherkapazität: {empfohlene_kapazitaet:.1f} - {empfohlene_kapazitaet*1.5:.1f} kWh")
+        
+        # Formatiere Kontext für LLM
+        context_parts = []
+        
+        # 1. SETS (Priorität!)
+        if components.get("sets"):
+            context_parts.append("\n═══════════════════════════════════════════════════════════════════")
+            context_parts.append("🎯 EMPFOHLENE KOMPLETT-SETS (optimal zusammengestellt)")
+            context_parts.append("═══════════════════════════════════════════════════════════════════")
+            for i, set_product in enumerate(components["sets"][:5], 1):
+                stueckliste = set_product.get("stueckliste", [])
+                context_parts.append(f"\n📦 SET {i}: {set_product.get('artikelname', 'N/A')}")
+                context_parts.append(f"   Artikelnummer: {set_product.get('artikelnummer', 'N/A')}")
+                context_parts.append(f"   Hersteller: {set_product.get('hersteller', 'N/A')}")
+                context_parts.append(f"   Relevanz-Score: {set_product.get('score', 0)*100:.0f}%")
+                if stueckliste:
+                    context_parts.append(f"   Enthält {len(stueckliste)} Komponenten:")
+                    for teil in stueckliste[:5]:
+                        context_parts.append(f"      • {teil.get('menge', 1)}x {teil.get('artikelnummer', 'N/A')}")
+                    if len(stueckliste) > 5:
+                        context_parts.append(f"      ... und {len(stueckliste)-5} weitere")
+        
+        # 2. EINZELKOMPONENTEN
+        if components.get("solarmodule") or components.get("wechselrichter") or components.get("speichersysteme"):
+            context_parts.append("\n═══════════════════════════════════════════════════════════════════")
+            context_parts.append("🔧 EINZELKOMPONENTEN (für individuelle Zusammenstellung)")
+            context_parts.append("═══════════════════════════════════════════════════════════════════")
+            
+            if components.get("solarmodule"):
+                context_parts.append("\n☀️ SOLARMODULE:")
+                for modul in components["solarmodule"][:3]:
+                    benoetigte = modul.get("benoetigte_anzahl", "?")
+                    leistung = modul.get("modul_leistung_w", "?")
+                    context_parts.append(f"   • {modul.get('artikelname', 'N/A')}")
+                    context_parts.append(f"     Art.-Nr.: {modul.get('artikelnummer', 'N/A')}")
+                    if benoetigte != "?":
+                        context_parts.append(f"     → Benötigt: ca. {benoetigte} Stück für {gewuenschte_leistung_kwp:.1f} kWp")
+            
+            if components.get("wechselrichter"):
+                context_parts.append("\n⚡ WECHSELRICHTER:")
+                for wr in components["wechselrichter"][:3]:
+                    context_parts.append(f"   • {wr.get('artikelname', 'N/A')}")
+                    context_parts.append(f"     Art.-Nr.: {wr.get('artikelnummer', 'N/A')}")
+                    context_parts.append(f"     Typ: {wr.get('produkttyp', 'N/A')}")
+            
+            if mit_speicher and components.get("speichersysteme"):
+                context_parts.append("\n🔋 SPEICHERSYSTEME:")
+                for sp in components["speichersysteme"][:3]:
+                    context_parts.append(f"   • {sp.get('artikelname', 'N/A')}")
+                    context_parts.append(f"     Art.-Nr.: {sp.get('artikelnummer', 'N/A')}")
+        
+        product_context = "\n".join(context_parts)
+        
+        # Erstelle System-Prompt
+        pv_prompt = self.prompt_manager.get_pv_recommendation_prompt()
+        
+        system_prompt = f"""{self.create_system_prompt()}
+
+KUNDENANFRAGE FÜR PV-ANLAGE:
+════════════════════════════════════════════════════════════════════
+- Gewünschte Leistung: {gewuenschte_leistung_kwp:.1f} kWp
+- Dachfläche: {dachflaeche_m2 if dachflaeche_m2 else 'Nicht angegeben'} m²
+- Dachneigung: {dachneigung_grad}°
+- Ausrichtung: {dachausrichtung.upper()} (Faktor: {ausrichtung_faktor})
+- Stromverbrauch: {stromverbrauch_kwh if stromverbrauch_kwh else 'Nicht angegeben'} kWh/Jahr
+- Mit Speicher: {'Ja' if mit_speicher else 'Nein'}
+- Notstromfähig: {'Ja' if notstromfaehig else 'Nein'}
+- Balkonkraftwerk: {'Ja' if balkonkraftwerk else 'Nein'}
+- Max. Budget: {max_budget if max_budget else 'Nicht angegeben'} €
+- Zusätzliche Infos: {beschreibung if beschreibung else 'Keine'}
+
+BERECHNUNGEN:
+{chr(10).join(recommendations)}
+
+{product_context}
+
+{pv_prompt}"""
+        
+        try:
+            request_params = {
+                "model": self.model_recommendation,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": "Erstelle eine passende PV-Anlagen-Empfehlung basierend auf meinen Angaben. Empfehle zuerst passende Sets, dann ggf. Einzelkomponenten."}
+                ],
+                "temperature": 0.7
+            }
+            
+            if "gpt-5" in self.model_recommendation.lower():
+                request_params["max_completion_tokens"] = 2000
+            else:
+                request_params["max_tokens"] = 2000
+            
+            response = self.openai_client.chat.completions.create(**request_params)
+            
+            # Alle Produkte zusammenführen
+            all_products = []
+            for set_prod in components.get("sets", []):
+                set_prod["kategorie"] = "set"
+                all_products.append(set_prod)
+            for mod in components.get("solarmodule", []):
+                mod["kategorie"] = "solarmodul"
+                all_products.append(mod)
+            for wr in components.get("wechselrichter", []):
+                wr["kategorie"] = "wechselrichter"
+                all_products.append(wr)
+            for sp in components.get("speichersysteme", []):
+                sp["kategorie"] = "speichersystem"
+                all_products.append(sp)
+            
+            return {
+                "response": response.choices[0].message.content,
+                "products": all_products,
+                "components": components,
+                "recommendations": recommendations,
+                "parameter": {
+                    "gewuenschte_leistung_kwp": gewuenschte_leistung_kwp,
+                    "dachflaeche_m2": dachflaeche_m2,
+                    "dachneigung_grad": dachneigung_grad,
+                    "dachausrichtung": dachausrichtung,
+                    "erwarteter_ertrag_kwh": round(erwarteter_ertrag),
+                    "mit_speicher": mit_speicher,
+                    "notstromfaehig": notstromfaehig
+                },
+                "model": self.model_recommendation
+            }
+        except Exception as e:
+            return {
+                "response": f"Entschuldigung, bei der Erstellung der PV-Empfehlung ist ein Fehler aufgetreten: {str(e)}",
+                "products": [],
+                "components": components,
+                "recommendations": recommendations,
+                "error": str(e)
+            }
 

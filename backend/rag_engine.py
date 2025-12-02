@@ -6,6 +6,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import Filter, FieldCondition, MatchValue
 import openai
 import sys
+import re
 from pathlib import Path
 
 # Pfad für Imports hinzufügen
@@ -300,8 +301,6 @@ class RAGEngine:
         min_score: float = 0.3
     ) -> List[Dict]:
         """Intelligente Suche: Artikelnummer → Teilweise Artikelnummer → Hersteller → Artikelname → Semantisch"""
-        import re
-        
         results = []
         seen_artikelnummern = set()
         
@@ -474,4 +473,203 @@ class RAGEngine:
         all_products.sort(key=lambda x: x["score"], reverse=True)
         
         return all_products[:10]  # Top 10 Ergebnisse
+    
+    def find_pv_components(
+        self,
+        gewuenschte_leistung_kwp: float,
+        mit_speicher: bool = True,
+        notstromfaehig: bool = False,
+        balkonkraftwerk: bool = False
+    ) -> Dict[str, List[Dict]]:
+        """
+        Findet passende PV-Komponenten und Sets.
+        
+        PRIORITÄT:
+        1. Fertige Sets (mit Stückliste) - optimal zusammengestellt
+        2. Einzelkomponenten (Solarmodule, Wechselrichter, Speicher)
+        
+        Args:
+            gewuenschte_leistung_kwp: Gewünschte PV-Leistung in kWp
+            mit_speicher: Ob Speicher gewünscht ist
+            notstromfaehig: Ob Notstromfähigkeit gewünscht ist
+            balkonkraftwerk: Ob es ein Balkonkraftwerk sein soll
+        
+        Returns:
+            Dict mit kategorisierten Produkten:
+            {
+                "sets": [...],              # Fertige Sets mit Stückliste
+                "solarmodule": [...],       # Einzelne Solarmodule
+                "wechselrichter": [...],    # Wechselrichter
+                "speichersysteme": [...]    # Speicher (wenn gewünscht)
+            }
+        """
+        try:
+            # Hole alle Produkte
+            results = self.qdrant_client.scroll(
+                collection_name=COLLECTION_NAME,
+                limit=10000
+            )
+            
+            points, _ = results if isinstance(results, tuple) else (results, None)
+            
+            # Kategorisiere Produkte
+            sets = []
+            solarmodule = []
+            wechselrichter = []
+            speichersysteme = []
+            
+            for point in points:
+                payload = point.payload
+                produkttyp = payload.get("produkttyp", "").lower()
+                kompatibilitaet = payload.get("kompatibilitaet", {})
+                stueckliste = kompatibilitaet.get("stueckliste", [])
+                
+                product = {
+                    "id": point.id,
+                    "artikelnummer": payload.get("artikelnummer", ""),
+                    "artikelname": payload.get("artikelname", ""),
+                    "produkttyp": payload.get("produkttyp", ""),
+                    "hersteller": payload.get("hersteller", ""),
+                    "kurzbeschreibung": payload.get("kurzbeschreibung", ""),
+                    "kategoriepfad": payload.get("kategoriepfad", ""),
+                    "payload": payload
+                }
+                
+                # 1. SETS: Produkte mit Stückliste (fertige Kombinationen)
+                if stueckliste and len(stueckliste) >= 2:
+                    # Prüfe ob das Set zur gewünschten Leistung passt
+                    name_lower = payload.get("artikelname", "").lower()
+                    
+                    # Extrahiere kW/kWp aus dem Namen
+                    kw_match = re.search(r'(\d+(?:[.,]\d+)?)\s*(?:kw|kwp)', name_lower)
+                    kwh_match = re.search(r'(\d+(?:[.,]\d+)?)\s*kwh', name_lower)
+                    
+                    set_leistung_kw = None
+                    if kw_match:
+                        set_leistung_kw = float(kw_match.group(1).replace(',', '.'))
+                    
+                    # Berechne Score basierend auf Passgenauigkeit
+                    score = 0.5  # Basis-Score für Sets
+                    
+                    if set_leistung_kw:
+                        # Score erhöhen wenn Leistung ähnlich
+                        diff_ratio = abs(set_leistung_kw - gewuenschte_leistung_kwp) / max(gewuenschte_leistung_kwp, 1)
+                        if diff_ratio < 0.2:  # ±20%
+                            score = 0.95
+                        elif diff_ratio < 0.5:  # ±50%
+                            score = 0.8
+                        else:
+                            score = 0.6
+                    
+                    # Notstrom-Filter
+                    if notstromfaehig:
+                        if "notstrom" in name_lower or "backup" in name_lower or "ersatz" in name_lower:
+                            score += 0.1
+                    
+                    # Speicher-Filter
+                    if mit_speicher:
+                        if kwh_match or "speicher" in name_lower or "batterie" in name_lower:
+                            score += 0.1
+                        else:
+                            score -= 0.2  # Abwerten wenn kein Speicher aber gewünscht
+                    
+                    product["score"] = min(score, 1.0)
+                    product["stueckliste"] = stueckliste
+                    product["ist_set"] = True
+                    sets.append(product)
+                
+                # 2. BALKONKRAFTWERK: Mikrowechselrichter
+                elif balkonkraftwerk and produkttyp == "mikrowechselrichter":
+                    product["score"] = 0.85
+                    wechselrichter.append(product)
+                
+                # 3. SOLARMODULE
+                elif produkttyp == "solarmodul":
+                    # Extrahiere Watt aus dem Namen
+                    name_lower = payload.get("artikelname", "").lower()
+                    watt_match = re.search(r'(\d+)\s*w(?:att)?', name_lower)
+                    
+                    if watt_match:
+                        modul_watt = int(watt_match.group(1))
+                        # Berechne wie viele Module für gewünschte Leistung
+                        benoetigte_module = (gewuenschte_leistung_kwp * 1000) / modul_watt
+                        product["benoetigte_anzahl"] = round(benoetigte_module)
+                        product["modul_leistung_w"] = modul_watt
+                        product["score"] = 0.7
+                    else:
+                        product["score"] = 0.5
+                    
+                    solarmodule.append(product)
+                
+                # 4. WECHSELRICHTER (Hybrid & String)
+                elif "wechselrichter" in produkttyp:
+                    name_lower = payload.get("artikelname", "").lower()
+                    
+                    # Extrahiere kW aus dem Namen
+                    kw_match = re.search(r'(\d+(?:[.,]\d+)?)\s*kw', name_lower)
+                    
+                    score = 0.6
+                    if kw_match:
+                        wr_leistung_kw = float(kw_match.group(1).replace(',', '.'))
+                        # Score erhöhen wenn Leistung ähnlich
+                        diff_ratio = abs(wr_leistung_kw - gewuenschte_leistung_kwp) / max(gewuenschte_leistung_kwp, 1)
+                        if diff_ratio < 0.3:
+                            score = 0.85
+                        elif diff_ratio < 0.6:
+                            score = 0.7
+                    
+                    # Hybrid bevorzugen wenn Speicher gewünscht
+                    if mit_speicher and "hybrid" in produkttyp:
+                        score += 0.1
+                    
+                    # Notstrom-Filter
+                    if notstromfaehig:
+                        if "notstrom" in name_lower or "backup" in name_lower:
+                            score += 0.1
+                    
+                    product["score"] = min(score, 1.0)
+                    wechselrichter.append(product)
+                
+                # 5. SPEICHERSYSTEME (wenn gewünscht)
+                elif mit_speicher and produkttyp in ["speichersystem", "batterie"]:
+                    name_lower = payload.get("artikelname", "").lower()
+                    
+                    # Extrahiere kWh aus dem Namen
+                    kwh_match = re.search(r'(\d+(?:[.,]\d+)?)\s*kwh', name_lower)
+                    
+                    score = 0.6
+                    if kwh_match:
+                        speicher_kwh = float(kwh_match.group(1).replace(',', '.'))
+                        # Empfohlene Speichergröße: ca. 1-1.5 kWh pro kWp
+                        empfohlen_kwh = gewuenschte_leistung_kwp * 1.2
+                        diff_ratio = abs(speicher_kwh - empfohlen_kwh) / max(empfohlen_kwh, 1)
+                        if diff_ratio < 0.3:
+                            score = 0.85
+                        elif diff_ratio < 0.6:
+                            score = 0.7
+                    
+                    product["score"] = min(score, 1.0)
+                    speichersysteme.append(product)
+            
+            # Sortiere alle Listen nach Score
+            sets.sort(key=lambda x: x.get("score", 0), reverse=True)
+            solarmodule.sort(key=lambda x: x.get("score", 0), reverse=True)
+            wechselrichter.sort(key=lambda x: x.get("score", 0), reverse=True)
+            speichersysteme.sort(key=lambda x: x.get("score", 0), reverse=True)
+            
+            return {
+                "sets": sets[:10],  # Top 10 Sets
+                "solarmodule": solarmodule[:5],
+                "wechselrichter": wechselrichter[:5],
+                "speichersysteme": speichersysteme[:5] if mit_speicher else []
+            }
+            
+        except Exception as e:
+            print(f"Fehler bei PV-Komponenten-Suche: {e}")
+            return {
+                "sets": [],
+                "solarmodule": [],
+                "wechselrichter": [],
+                "speichersysteme": []
+            }
 
