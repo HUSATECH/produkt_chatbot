@@ -26,13 +26,8 @@ from backend.rag_engine import RAGEngine
 # Import PromptManager für zentrale Prompt-Verwaltung
 from prompts.prompt_manager import get_prompt_manager
 
-# Import PlatformAPIClient aus RAG-System
-RAG_SYSTEM_LIBS = Path(__file__).parent.parent.parent / "RAG-System" / "libs"
-if RAG_SYSTEM_LIBS.exists():
-    sys.path.insert(0, str(RAG_SYSTEM_LIBS))
-    from platform_api_client import PlatformAPIClient
-else:
-    raise ImportError(f"RAG-System/libs nicht gefunden: {RAG_SYSTEM_LIBS}")
+# Import PlatformAPIClient aus lokaler libs
+from backend.libs.platform_api_client import PlatformAPIClient
 
 class LLMService:
     """Service für LLM-Interaktionen mit RAG-Unterstützung

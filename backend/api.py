@@ -14,14 +14,8 @@ from pathlib import Path
 # Pfad für Imports hinzufügen
 sys.path.append(str(Path(__file__).parent.parent))
 
-# Import PlatformAPIClient aus RAG-System
-# NEU: Relativer Import zum RAG-System
-RAG_SYSTEM_LIBS = Path(__file__).parent.parent.parent / "RAG-System" / "libs"
-if RAG_SYSTEM_LIBS.exists():
-    sys.path.insert(0, str(RAG_SYSTEM_LIBS))
-    from platform_api_client import PlatformAPIClient
-else:
-    raise ImportError(f"RAG-System/libs nicht gefunden: {RAG_SYSTEM_LIBS}")
+# Import PlatformAPIClient aus lokaler libs
+from backend.libs.platform_api_client import PlatformAPIClient
 
 from backend.llm_service import LLMService
 from backend.rag_engine import RAGEngine
